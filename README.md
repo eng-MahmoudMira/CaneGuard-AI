@@ -71,12 +71,3 @@ The Streamlit web app provides:
 ✅ Class probability table and bar chart  
 ✅ Disease explanation and suggested actions  
 ✅ Downloadable PDF report (with timestamp and image)
-
----
-
-## ⚙️ How to Run the Project Locally
-
-### 1. Clone the repository
-```bash
-git clone https://github.com/your-username/caneguard-ai.git
-cd caneguard-ai
