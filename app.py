@@ -2,12 +2,21 @@ import streamlit as st
 import numpy as np
 from PIL import Image
 from tensorflow import keras
-import pandas as pd 
+import pandas as pd
+from io import BytesIO
+from datetime import datetime
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import Table, TableStyle, SimpleDocTemplate, Paragraph, Spacer, Image as RLImage
+from reportlab.graphics.shapes import Drawing, Rect, String
 
 # --------- CONFIG ----------
 CLASS_NAMES = ["Healthy", "Mosaic", "RedRot", "Rust", "Yellow"]
-IMG_SIZE = (224, 224)   # same as training
+IMG_SIZE = (224, 224) 
 MODEL_PATH = "efficientnet_transfer.h5"
+TEAM_NAME = "Mahmoud Mira · Farah Bassiony · Yousef Shaban"
 # ----------------------------
 
 # Extra info to show helpful context
@@ -40,7 +49,6 @@ def load_sugarcane_model():
     return model
 
 def preprocess_image(img: Image.Image) -> np.ndarray:
-
     # Resize
     img = img.resize(IMG_SIZE)
 
@@ -66,6 +74,144 @@ def predict_image(model, img: Image.Image):
     confidence = float(preds[predicted_index])
     return predicted_class, confidence, preds
 
+def create_pdf_report(predicted_class: str, confidence: float, prob_dict: dict, img: Image.Image):
+    buffer = BytesIO()
+
+    # Document template with margins
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=40,
+        rightMargin=40,
+        topMargin=60,
+        bottomMargin=50,
+    )
+    styles = getSampleStyleSheet()
+    elements = []
+
+    # ---- Title ----
+    elements.append(Paragraph("<b>Sugarcane Leaf Disease Prediction Report</b>", styles["Title"]))
+
+    # ---- Timestamp ----
+    elements.append(Spacer(1, 8))
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    elements.append(Paragraph(f"Report generated at: {timestamp}", styles["Normal"]))
+    elements.append(Spacer(1, 8))
+
+    # ---- Summary ----
+    elements.append(Paragraph(f"Predicted Class: <b>{predicted_class}</b>", styles["Normal"]))
+    elements.append(Paragraph(f"Confidence: <b>{confidence * 100:.2f}%</b>", styles["Normal"]))
+    elements.append(Spacer(1, 12))
+
+    # ---- Uploaded Image (scaled with aspect ratio) ----
+    if img is not None:
+        img_buffer = BytesIO()
+        img_rgb = img.convert("RGB")
+        img_rgb.save(img_buffer, format="PNG")
+        img_buffer.seek(0)
+
+        orig_w, orig_h = img_rgb.size
+        target_width = 220.0  # reasonable size
+        aspect = orig_h / orig_w if orig_w != 0 else 1.0
+        target_height = target_width * aspect
+
+        rl_img = RLImage(img_buffer, width=target_width, height=target_height)
+
+        elements.append(Paragraph("Uploaded Leaf Image:", styles["Heading3"]))
+        elements.append(rl_img)
+        elements.append(Spacer(1, 12))
+
+    # ---- Class probabilities table ----
+    table_data = [["Class", "Probability (%)"]]
+    for cls, p in prob_dict.items():
+        table_data.append([cls, f"{p * 100:.2f}"])
+
+    table = Table(table_data, colWidths=[200, 150])
+    table.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 1, colors.black),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+        ("ALIGN", (1, 1), (-1, -1), "CENTER"),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
+    ]))
+
+    elements.append(Paragraph("Class Probabilities Table:", styles["Heading3"]))
+    elements.append(table)
+    elements.append(Spacer(1, 12))
+
+    # ---- Green bar chart as a Drawing ----
+    max_prob = max(prob_dict.values()) if prob_dict else 1.0
+    chart_width = 300
+    row_height = 16
+    chart_height = row_height * max(len(prob_dict), 1) + 20
+
+    drawing = Drawing(chart_width + 180, chart_height)
+
+    y = chart_height - 15
+    for cls, p in prob_dict.items():
+        bar_len = (p / max_prob) * chart_width if max_prob > 0 else 0
+
+        # Class label
+        drawing.add(String(0, y, cls, fontSize=9, fillColor=colors.black))
+
+        # Green bar
+        drawing.add(
+            Rect(
+                60,
+                y - 4,
+                bar_len,
+                10,
+                fillColor=colors.green,
+                strokeColor=colors.green,
+            )
+        )
+
+        # Percentage text
+        drawing.add(
+            String(
+                60 + chart_width + 10,
+                y - 1,
+                f"{p * 100:.1f}%",
+                fontSize=8,
+                fillColor=colors.black,
+            )
+        )
+
+        y -= row_height
+
+    elements.append(Paragraph("Class Probabilities Chart:", styles["Heading3"]))
+    elements.append(drawing)
+    elements.append(Spacer(1, 12))
+
+    # ---- Disease info ----
+    elements.append(Paragraph("Disease Description & Suggested Action:", styles["Heading3"]))
+    info = DISEASE_INFO.get(predicted_class)
+    if info:
+        elements.append(Paragraph(info["description"], styles["Normal"]))
+        elements.append(Spacer(1, 6))
+        elements.append(Paragraph(info["advice"], styles["Normal"]))
+    else:
+        elements.append(Paragraph("No additional information available for this class yet.", styles["Normal"]))
+
+    elements.append(Spacer(1, 24))
+
+    # ---- Signature (centered) ----
+    center_style = ParagraphStyle(
+        name="Center",
+        parent=styles["Normal"],
+        alignment=1  # 1 = CENTER
+    )
+
+    elements.append(Spacer(1, 20))
+    elements.append(Paragraph("Generated by CaneGuard AI - Sugarcane Leaf Disease Detection App", center_style))
+    elements.append(Paragraph(TEAM_NAME, center_style))
+    elements.append(Paragraph("© 2025 All rights reserved.", center_style))
+
+    # Build document
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer
+
 def main():
     st.set_page_config(
         page_title="Sugarcane Leaf Disease Detection",
@@ -82,7 +228,7 @@ def main():
         st.markdown("### How to use:")
         st.markdown(
             "1. Take a clear photo of a sugarcane leaf.\n"
-            "2. Upload the image using the uploader.\n"
+            "2. Upload the image or use the camera.\n"
             "3. Click **Predict** to see the result.\n"
             "4. Read the **disease info & advice** section."
         )
@@ -100,20 +246,38 @@ def main():
     with tab_detector:
         st.title("🌱 Sugarcane Leaf Disease Prediction")
         st.write(
-            "Upload a sugarcane leaf image and let our AI model predict the disease class."
+            "Upload a sugarcane leaf image **or capture one with your camera**, and let our AI model predict the disease class."
         )
 
         # Load model once
         with st.spinner("Loading AI model..."):
             model = load_sugarcane_model()
 
-        uploaded_file = st.file_uploader(
-            "Upload a sugarcane leaf image (JPG/PNG)...", type=["jpg", "jpeg", "png", "webp"]
-        )
+        # Two columns: Upload + Camera
+        col1, col2 = st.columns(2)
+
+        with col1:
+            uploaded_file = st.file_uploader(
+                "📁 Upload image (JPG/PNG/WEBP)",
+                type=["jpg", "jpeg", "png", "webp"]
+            )
+
+        with col2:
+            camera_image = st.camera_input("📷 Or take a photo")
+
+        # Decide which image to use
+        img = None
+        img_source = None
 
         if uploaded_file is not None:
             img = Image.open(uploaded_file)
-            st.image(img, caption="Uploaded Image", use_container_width=True)
+            img_source = "Uploaded Image"
+        elif camera_image is not None:
+            img = Image.open(camera_image)
+            img_source = "Captured from Camera"
+
+        if img is not None:
+            st.image(img, caption=img_source, use_container_width=True)
 
             if st.button("🔍 Predict"):
                 with st.spinner("Analyzing..."):
@@ -121,7 +285,11 @@ def main():
 
                 st.subheader("Prediction")
                 st.write(f"**Class:** {predicted_class}")
-                st.write(f"**Confidence:** {confidence * 100:.2f}%")
+
+                # Confidence gauge
+                st.subheader("Confidence Level")
+                st.write(f"{confidence * 100:.2f}%")
+                st.progress(int(confidence * 100))
 
                 # Confidence warning if model is not very sure
                 if confidence < 0.6:
@@ -149,7 +317,18 @@ def main():
                 st.dataframe(df_probs.style.format({"Probability": "{:.2%}"}))
                 st.bar_chart(df_probs)
 
+                # PDF report including table + bar info + signature
+                pdf_buffer = create_pdf_report(predicted_class, confidence, prob_dict, img)
+                st.download_button(
+                    label="📄 Download Prediction Report (PDF)",
+                    data=pdf_buffer,
+                    file_name="sugarcane_prediction_report.pdf",
+                    mime="application/pdf"
+                )
+
                 st.success("You can try another image if you like!")
+        else:
+            st.info("Upload an image or use the camera to get started.")
 
         st.markdown("---")
         st.caption("SIC Graduation Project – Sugarcane Leaf Disease Prediction")
@@ -199,7 +378,7 @@ def main():
         st.markdown(
             "1. Capture or choose a clear image of a single sugarcane leaf.\n"
             "2. Avoid blurry images or very dark/over-exposed lighting.\n"
-            "3. Upload the image in the **Detector** tab.\n"
+            "3. Upload the image or use the camera in the **Detector** tab.\n"
             "4. Click **Predict** to see the predicted class and confidence.\n"
             "5. Read the **Disease Information & Advice** for basic guidance."
         )
@@ -222,11 +401,6 @@ def main():
 
         st.markdown("---")
         st.markdown("### 👥 Team & Contacts")
-
-        st.write(
-            "You can add your names and LinkedIn profiles below. "
-            "This section is great to show during your presentation or for anyone visiting the app."
-        )
 
         st.markdown("**Team Members:**")
         st.markdown(
@@ -255,8 +429,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
